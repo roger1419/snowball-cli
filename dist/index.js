@@ -5338,6 +5338,35 @@ var commands = {
       desc: "Minute-level chart data",
       run: async () => out(await minute(requireArg(1, "Usage: snowball minute SH600519")))
     },
+    kchart: {
+      usage: "kchart <symbol> [--period day] [--count 60] [--ma 5,10,20]",
+      desc: "K-line chart with indicators (candlestick + MA + Volume + PE/PB)",
+      run: async () => {
+        const sym = requireArg(1, "Usage: snowball kchart SH600519 [--period week --count 52]");
+        const per = flag("period") ?? "day";
+        const cnt = count(60);
+        const maStr = flag("ma") ?? "5,10,20";
+        const kchartPy = join(__dirname2, "lib", "kchart.py");
+        if (!existsSync(kchartPy)) {
+          const kchartPy2 = join(__dirname2, "..", "lib", "kchart.py");
+          if (existsSync(kchartPy2)) {
+            var kchartPath = kchartPy2;
+          } else {
+            console.error("kchart.py not found. Install plotext: pip install plotext");
+            process.exitCode = 1;
+            return;
+          }
+        } else {
+          var kchartPath = kchartPy;
+        }
+        const { execSync } = await import("child_process");
+        try {
+          execSync(`python "${kchartPath}" ${sym} --period ${per} --count ${cnt} --ma ${maStr}`, { stdio: "inherit" });
+        } catch (e) {
+          process.exitCode = 1;
+        }
+      }
+    },
     market: {
       usage: "market",
       desc: "Major indices overview (no login needed)",
@@ -5503,21 +5532,28 @@ var commands = {
 };
 if (MODE === "--version" || MODE === "-v") {
   console.log(VERSION);
-  process.exit(0);
+  process.exitCode = 0;
 }
+let _commandFound = false;
 for (const group of Object.values(commands)) {
   if (MODE && MODE in group) {
+    _commandFound = true;
     try {
       await group[MODE].run();
     } catch (e) {
       console.error(`
   Error: ${e.message}
 `);
-      process.exit(1);
+      process.exitCode = 1;
     }
-    process.exit(0);
+    break;
   }
 }
+if (_commandFound) {
+  process.exitCode = process.exitCode || 0;
+} else if (MODE === "--version" || MODE === "-v") {
+  // already handled
+} else {
 showLogo();
 console.log(`  Snowball CLI v${VERSION} — Xueqiu stock data for AI agents
 `);
@@ -5536,3 +5572,4 @@ console.log(`    SZ000858  Shenzhen (Wuliangye)   01810  HK stock (Xiaomi)
 `);
 console.log(`  All output is JSON — pipe to jq or use in agent scripts.
 `);
+}
