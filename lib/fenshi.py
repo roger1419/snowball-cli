@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 snowball kchart --period minute — Terminal Intraday Minute Chart (分时图)
+Uses Unicode Braille characters for high-resolution rendering, inspired by glint.
 Usage: snowball kchart <symbol> --period minute [--refresh 30]
 """
 
@@ -12,6 +13,107 @@ import os
 import shutil
 from datetime import datetime
 
+# ── ANSI helpers ──────────────────────────────────────────────
+
+ESC = "\033["
+RESET = f"{ESC}0m"
+BOLD = f"{ESC}1m"
+DIM = f"{ESC}2m"
+
+def fg(r, g, b): return f"{ESC}38;2;{r};{g};{b}m"
+def bg(r, g, b): return f"{ESC}48;2;{r};{g};{b}m"
+
+# Theme colors
+C_RED     = fg(232, 76, 61)
+C_GREEN   = fg(38, 166, 91)
+C_YELLOW  = fg(240, 200, 60)
+C_WHITE   = fg(220, 220, 220)
+C_DIM     = fg(110, 110, 130)
+C_DARK    = fg(70, 70, 90)
+C_CYAN    = fg(80, 200, 220)
+C_BG      = bg(22, 22, 40)
+
+# ── Braille rendering ────────────────────────────────────────
+
+BRAILLE_BASE = 0x2800
+BIT_AT = [
+    [0x01, 0x08],
+    [0x02, 0x10],
+    [0x04, 0x20],
+    [0x40, 0x80],
+]
+
+def braille_char(bitmap, row, col, sub_rows, sub_cols):
+    """Get Braille character for a 4x2 sub-cell at (row_block, col_block)."""
+    code = 0
+    for r in range(4):
+        for c in range(2):
+            br = row * 4 + r
+            bc = col * 2 + c
+            if 0 <= br < sub_rows and 0 <= bc < sub_cols:
+                if bitmap[br][bc]:
+                    code |= BIT_AT[r][c]
+    if code == 0:
+        return None
+    return chr(BRAILLE_BASE + code)
+
+
+def render_braille(points, width, height_rows, ymin, ymax):
+    """Render a price series as Braille character grid.
+    Returns list of strings, one per row (top to bottom).
+    points: list of float values
+    width: character columns for the chart area
+    height_rows: character rows for the chart area
+    """
+    if not points or ymax <= ymin:
+        return [" " * width] * height_rows
+
+    sub_rows = height_rows * 4
+    sub_cols = width * 2
+    # Use plain list of lists instead of numpy
+    bitmap = [[False] * sub_cols for _ in range(sub_rows)]
+
+    n = len(points)
+
+    # Map each point to sub-pixel coordinates
+    prev_sr = None
+    prev_sc = 0
+    for i, val in enumerate(points):
+        sc = int(i * (sub_cols - 1) / max(n - 1, 1))
+        if ymax == ymin:
+            sr = sub_rows // 2
+        else:
+            ratio = (val - ymin) / (ymax - ymin)
+            sr = int((1.0 - ratio) * (sub_rows - 1))
+            sr = max(0, min(sub_rows - 1, sr))
+
+        bitmap[sr][sc] = True
+
+        # Connect to previous point to avoid gaps
+        if prev_sr is not None and abs(sr - prev_sr) > 1:
+            step = 1 if sr > prev_sr else -1
+            for fill_r in range(prev_sr + step, sr, step):
+                frac = (fill_r - prev_sr) / (sr - prev_sr) if sr != prev_sr else 0
+                fill_c = int(prev_sc + frac * (sc - prev_sc))
+                if 0 <= fill_r < sub_rows and 0 <= fill_c < sub_cols:
+                    bitmap[fill_r][fill_c] = True
+
+        prev_sr = sr
+        prev_sc = sc
+
+    # Fold bitmap into Braille characters
+    lines = []
+    for row in range(height_rows):
+        line = []
+        for col in range(width):
+            ch = braille_char(bitmap, row, col, sub_rows, sub_cols)
+            line.append(ch if ch else " ")
+        lines.append("".join(line))
+
+    return lines
+
+
+# ── Data fetching ─────────────────────────────────────────────
 
 def run_snowball(args):
     snowball_path = shutil.which("snowball")
@@ -68,7 +170,7 @@ def slot_from_time(h, m):
 
 
 def fetch_data(symbol):
-    """Fetch and parse minute + quote data. Returns dict with parsed fields."""
+    """Fetch and parse minute + quote data."""
     raw_minute = run_snowball(["minute", symbol])
     minute_data = json.loads(raw_minute)
 
@@ -79,10 +181,8 @@ def fetch_data(symbol):
     last_close = minute_data.get("last_close") or quote.get("last_close", 0)
     after = minute_data.get("after", [])
 
-    # Build 240-slot arrays
     prices = [None] * 240
     avg_prices = [None] * 240
-    # Store raw minute points by slot for volume computation
     slot_data = {}
 
     for pt in after:
@@ -93,10 +193,9 @@ def fetch_data(symbol):
             continue
         prices[slot] = pt.get("current")
         avg_prices[slot] = pt.get("avg_price")
-        if slot not in slot_data:
-            slot_data[slot] = pt
+        slot_data[slot] = pt
 
-    # Fill forward prices
+    # Fill forward
     last_valid = last_close
     for i in range(240):
         if prices[i] is not None:
@@ -104,27 +203,20 @@ def fetch_data(symbol):
         else:
             prices[i] = last_valid
 
-    # Compute per-minute volumes
-    # The API gives per-minute volume in the 'volume' field for some points,
-    # and cumulative volume_total for the first point (total day volume)
-    # Strategy: use the 'volume' field directly when available
+    # Per-minute volumes
     per_minute_vol = [0] * 240
     for slot, pt in slot_data.items():
         vol = pt.get("volume")
         if vol and vol > 0:
             per_minute_vol[slot] = vol
 
-    # If per-minute volumes are all zero (after-hours sparse data),
-    # show total volume as a single bar at the last known slot
+    # Fallback: distribute total volume if per-minute is sparse
     if not any(v > 0 for v in per_minute_vol):
         total_vol = quote.get("volume", 0)
-        if total_vol and total_vol > 0:
-            # Distribute evenly across all active slots
-            active_count = len(slot_data)
-            if active_count > 0:
-                per_bar = total_vol / active_count
-                for slot in slot_data:
-                    per_minute_vol[slot] = int(per_bar)
+        if total_vol and total_vol > 0 and slot_data:
+            per_bar = total_vol / len(slot_data)
+            for slot in slot_data:
+                per_minute_vol[slot] = int(per_bar)
 
     # Find last active slot
     last_slot = 0
@@ -133,7 +225,6 @@ def fetch_data(symbol):
             last_slot = i
             break
     if last_slot == 0 and after:
-        # Use all 240 slots if we have data
         last_slot = 239
 
     return {
@@ -147,8 +238,14 @@ def fetch_data(symbol):
     }
 
 
+# ── Rendering ─────────────────────────────────────────────────
+
 def draw_fenshi(symbol, refresh_interval=0):
-    import plotext as plt
+    import shutil
+
+    term_size = shutil.get_terminal_size((120, 36))
+    term_w = min(term_size.columns, 140)
+    term_h = min(term_size.lines, 42)
 
     while True:
         data = fetch_data(symbol)
@@ -158,7 +255,6 @@ def draw_fenshi(symbol, refresh_interval=0):
         per_minute_vol = data["per_minute_vol"]
         last_slot = data["last_slot"]
         quote = data["quote"]
-        slot_data = data["slot_data"]
 
         if not last_close:
             print("No intraday data available.")
@@ -169,10 +265,40 @@ def draw_fenshi(symbol, refresh_interval=0):
         active_avg = avg_prices[:n]
         active_vol = per_minute_vol[:n]
 
-        # Y-axis: 9 price levels, centered on last_close, ±1.80%
+        # ── Layout ──
+        # Row 0: header
+        # Row 1: period tabs
+        # Rows 2-2+price_h: price chart (with Y-axis labels)
+        # Row separator
+        # Rows vol area: volume bars (with label)
+        # Row: info bar line 1
+        # Row: info bar line 2
+
+        y_label_w = 10  # "129.86 " width
+        y_pct_w = 8     # "+1.80%" width
+        x_label_h = 1
+        price_h = max(8, term_h - 14)  # chart rows for price
+        vol_h = 4                       # chart rows for volume
+        chart_w = term_w - y_label_w - y_pct_w - 2  # chart character columns
+
+        if chart_w < 20:
+            chart_w = 60
+            term_w = chart_w + y_label_w + y_pct_w + 2
+
+        # ── Y-axis: 9 levels centered on last_close ──
         max_pct = 1.80
+        # Expand if actual range exceeds
+        actual_max = max(active_prices)
+        actual_min = min(active_prices)
         step_pct = max_pct / 4  # 0.45%
         step_price = last_close * step_pct / 100
+        while actual_max > last_close + 4 * step_price:
+            step_price *= 1.3
+            step_pct = step_price / last_close * 100
+        while actual_min < last_close - 4 * step_price:
+            step_price *= 1.3
+            step_pct = step_price / last_close * 100
+
         y_levels = []
         y_labels_left = []
         y_labels_right = []
@@ -181,141 +307,180 @@ def draw_fenshi(symbol, refresh_interval=0):
             pct = k * step_pct
             y_levels.append(p)
             sign = "+" if pct >= 0 else ""
-            y_labels_left.append(f"{p:.2f}")
-            y_labels_right.append(f"{sign}{pct:.2f}%")
+            y_labels_left.append(f"{p:>9.2f}")
+            y_labels_right.append(f"{sign}{pct:>6.2f}%")
 
-        # Adjust y-axis range if prices exceed ±1.80%
-        actual_max = max(active_prices)
-        actual_min = min(active_prices)
-        upper_bound = last_close + 4 * step_price
-        lower_bound = last_close - 4 * step_price
-        while actual_max > upper_bound:
-            step_price *= 1.2
-            step_pct *= 1.2
-            upper_bound = last_close + 4 * step_price
-            lower_bound = last_close - 4 * step_price
-        while actual_min < lower_bound:
-            step_price *= 1.2
-            step_pct *= 1.2
-            upper_bound = last_close + 4 * step_price
-            lower_bound = last_close - 4 * step_price
+        ymin = y_levels[-1]
+        ymax = y_levels[0]
 
-        if step_price != last_close * max_pct / 100 / 4:
-            y_levels = []
-            y_labels_left = []
-            y_labels_right = []
-            for k in range(4, -5, -1):
-                p = last_close + k * step_price
-                pct = k * step_pct
-                y_levels.append(p)
-                sign = "+" if pct >= 0 else ""
-                y_labels_left.append(f"{p:.2f}")
-                y_labels_right.append(f"{sign}{pct:.2f}%")
+        # ── Render price Braille chart ──
+        price_lines = render_braille(active_prices, chart_w, price_h, ymin, ymax)
+        avg_lines = render_braille(
+            [v if v is not None else last_close for v in active_avg],
+            chart_w, price_h, ymin, ymax
+        )
 
-        def slot_time(s):
-            if s < 120:
-                mins = s + 30
-                h = 9 + mins // 60
-                m = mins % 60
-            else:
-                mins = s - 120
-                h = 13 + mins // 60
-                m = mins % 60
-            return f"{h}:{m:02d}"
+        # Reference line row (where last_close falls)
+        if ymax > ymin:
+            ref_ratio = (last_close - ymin) / (ymax - ymin)
+            ref_row = int((1.0 - ref_ratio) * (price_h - 1))
+            ref_row = max(0, min(price_h - 1, ref_row))
+        else:
+            ref_row = price_h // 2
 
-        x_vals = list(range(n))
+        # ── X-axis time labels ──
+        def slot_to_x(s):
+            return int(s * (chart_w - 1) / max(n - 1, 1))
 
-        # X-axis key time labels
-        tick_slots = []
-        tick_labels = []
-        for s, label in [(0, "9:30"), (60, "10:30"), (119, "11:30"),
-                         (120, "13:00"), (180, "14:00"), (239, "15:00")]:
-            if s < n:
-                tick_slots.append(s)
-                tick_labels.append(label)
+        time_marks = [
+            (0, "9:30"), (60, "10:30"), (119, "11:30"),
+            (120, "13:00"), (180, "14:00"), (min(239, n-1), "15:00")
+        ]
 
-        # ── Draw ──
-        plt.clf()
-        plt.plotsize(130, 36)
-        plt.theme("dark")
+        # ── Build output ──
+        out = []
+        out.append(C_BG)  # set background
 
-        plt.subplots(2, 1)
-
-        # ── Price chart ──
-        plt.subplot(1, 1)
-
-        # Baseline at last_close
-        plt.hline(last_close)
-
-        # Split price line into red/green segments for continuity
-        segments_red = []
-        segments_green = []
-        cur_x, cur_y, cur_color = [], [], None
-
-        for i in range(n):
-            color = "red" if active_prices[i] >= last_close else "green"
-            if cur_color is None:
-                cur_color = color
-            if color != cur_color:
-                # Overlap point for continuity
-                if cur_color == "red":
-                    segments_red.append((cur_x + [x_vals[i]], cur_y + [active_prices[i]]))
-                else:
-                    segments_green.append((cur_x + [x_vals[i]], cur_y + [active_prices[i]]))
-                cur_x = [x_vals[i]]
-                cur_y = [active_prices[i]]
-                cur_color = color
-            else:
-                cur_x.append(x_vals[i])
-                cur_y.append(active_prices[i])
-
-        if cur_x:
-            if cur_color == "red":
-                segments_red.append((cur_x, cur_y))
-            else:
-                segments_green.append((cur_x, cur_y))
-
-        for sx, sy in segments_red:
-            plt.plot(sx, sy, color="red+")
-        for sx, sy in segments_green:
-            plt.plot(sx, sy, color="green+")
-
-        # Average price line
-        avg_valid_x = [x_vals[i] for i in range(n) if active_avg[i] is not None]
-        avg_valid_y = [active_avg[i] for i in range(n) if active_avg[i] is not None]
-        if avg_valid_x:
-            plt.plot(avg_valid_x, avg_valid_y, color="yellow", label="均价")
-
-        # Y-axis ticks
-        plt.yticks(y_levels, y_labels_left)
-
-        # X-axis ticks
-        plt.xticks(tick_slots, tick_labels)
-
+        # Row 0: Header
         cur = active_prices[-1]
         chg_val = cur - last_close
         pct_val = chg_val / last_close * 100 if last_close else 0
         sign = "+" if pct_val >= 0 else ""
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        plt.title(f"{symbol}  分时图  {now_str}  {cur:.2f} {sign}{pct_val:.2f}%")
+        now_str = datetime.now().strftime("%H:%M:%S")
+        price_color = C_RED if pct_val >= 0 else C_GREEN
+
+        header = f" {C_WHITE}{BOLD}{symbol}{RESET}{C_BG}  {price_color}{BOLD}{cur:.2f}  {sign}{pct_val:.2f}%{RESET}{C_BG}    {C_DIM}{now_str}{RESET}{C_BG}"
+        out.append(header.ljust(term_w))
+
+        # Row 1: Period tabs
+        tabs = ["分时", "日K", "周K", "月K", "股价提醒"]
+        tab_str = ""
+        for i, t in enumerate(tabs):
+            if i == 0:
+                tab_str += f" {C_WHITE}{BOLD}[{t}]{RESET}{C_BG}"
+            else:
+                tab_str += f" {C_DIM}[{t}]{RESET}{C_BG}"
+        out.append(tab_str.ljust(term_w))
+
+        # Rows 2+: Price chart with Y-axis
+        for row in range(price_h):
+            left_label = y_labels_left[row] if row < len(y_labels_left) else " " * 9
+            right_label = y_labels_right[row] if row < len(y_labels_right) else " " * 7
+
+            # Determine line color
+            line = price_lines[row]
+            avg_line = avg_lines[row]
+
+            # Merge avg line into price line (avg in yellow)
+            merged = []
+            for ci in range(len(line)):
+                pch = line[ci] if ci < len(line) else " "
+                ach = avg_line[ci] if ci < len(avg_line) else " "
+                if ach != " " and pch == " ":
+                    merged.append((ach, C_YELLOW))
+                elif pch != " ":
+                    # Determine color based on which price this column maps to
+                    col_idx = int(ci / (chart_w - 1) * (n - 1)) if chart_w > 1 else 0
+                    col_idx = max(0, min(n - 1, col_idx))
+                    color = C_RED if active_prices[col_idx] >= last_close else C_GREEN
+                    merged.append((pch, color))
+                else:
+                    merged.append((" ", None))
+
+            # Reference line (dashed) at ref_row
+            if row == ref_row:
+                ref_chars = []
+                for ci in range(len(merged)):
+                    ch, _ = merged[ci]
+                    if ch != " ":
+                        ref_chars.append((ch, C_YELLOW if ch != " " else C_DARK))
+                    else:
+                        # Dashed line pattern
+                        if ci % 4 < 2:
+                            ref_chars.append(("┄", C_YELLOW + DIM))
+                        else:
+                            ref_chars.append((" ", None))
+                merged = ref_chars
+
+            # Build colored chart line
+            chart_str = ""
+            cur_color = None
+            for ch, color in merged:
+                if color != cur_color:
+                    if color:
+                        chart_str += color + C_BG
+                    else:
+                        chart_str += C_DIM + C_BG
+                    cur_color = color
+                chart_str += ch
+            chart_str += RESET + C_BG
+
+            label_color = C_DIM
+            if row == ref_row:
+                label_color = C_YELLOW
+
+            line_str = f" {label_color}{left_label}{RESET}{C_BG} {chart_str} {label_color}{right_label}{RESET}{C_BG}"
+            out.append(line_str.ljust(term_w))
+
+        # X-axis time labels
+        x_label_row = [" "] * chart_w
+        for slot_val, label in time_marks:
+            if slot_val < n:
+                x_pos = slot_to_x(slot_val)
+                for li, lc in enumerate(label):
+                    if x_pos + li < chart_w:
+                        x_label_row[x_pos + li] = lc
+
+        x_str = " " * (y_label_w + 1) + C_DIM + "".join(x_label_row) + RESET + C_BG
+        out.append(x_str.ljust(term_w))
 
         # ── Volume chart ──
-        plt.subplot(2, 1)
+        max_vol = max(active_vol) if active_vol and max(active_vol) > 0 else 1
+        vol_block_chars = "▁▂▃▄▅▆▇█"
 
-        red_vol_x = [x_vals[i] for i in range(n) if active_prices[i] >= last_close and active_vol[i] > 0]
-        red_vol_y = [active_vol[i] for i in range(n) if active_prices[i] >= last_close and active_vol[i] > 0]
-        green_vol_x = [x_vals[i] for i in range(n) if active_prices[i] < last_close and active_vol[i] > 0]
-        green_vol_y = [active_vol[i] for i in range(n) if active_prices[i] < last_close and active_vol[i] > 0]
+        vol_title = f" {C_DIM}成交量{RESET}{C_BG}"
+        out.append(vol_title.ljust(term_w))
 
-        if red_vol_x:
-            plt.bar(red_vol_x, red_vol_y, color="red+", width=0.8)
-        if green_vol_x:
-            plt.bar(green_vol_x, green_vol_y, color="green+", width=0.8)
+        for vh in range(vol_h):
+            vol_line = []
+            for ci in range(min(chart_w, len(active_vol))):
+                bar_idx = int(ci / (chart_w - 1) * (n - 1)) if chart_w > 1 else 0
+                bar_idx = max(0, min(n - 1, bar_idx))
+                v = active_vol[bar_idx]
+                if v <= 0:
+                    vol_line.append(" ")
+                    continue
 
-        plt.ylabel("Vol")
-        plt.xticks(tick_slots, tick_labels)
+                # Map volume to block height
+                vol_ratio = v / max_vol
+                filled_h = vol_ratio * vol_h
+                row_from_top = vol_h - vh  # bottom row = vol_h-1
+                if filled_h >= row_from_top:
+                    vol_line.append("█")
+                elif filled_h >= row_from_top - 1:
+                    partial = int((filled_h - row_from_top + 1) * 8)
+                    partial = max(0, min(7, partial))
+                    vol_line.append(vol_block_chars[partial] if partial > 0 else " ")
+                else:
+                    vol_line.append(" ")
 
-        plt.show()
+            # Color the volume line
+            colored_vol = ""
+            for ci, ch in enumerate(vol_line):
+                if ch == " ":
+                    colored_vol += " "
+                else:
+                    bar_idx = int(ci / (chart_w - 1) * (n - 1)) if chart_w > 1 else 0
+                    bar_idx = max(0, min(n - 1, bar_idx))
+                    color = C_RED if active_prices[bar_idx] >= last_close else C_GREEN
+                    colored_vol += color + ch + RESET + C_BG
+
+            vol_str = " " * (y_label_w + 1) + colored_vol
+            out.append(vol_str.ljust(term_w))
+
+        # Volume max label
+        vol_max_str = f" {C_DIM}{fmt_volume(max_vol):>9}{RESET}{C_BG} {C_DIM}{'─' * chart_w}{RESET}{C_BG}"
+        out.append(vol_max_str.ljust(term_w))
 
         # ── Info bar ──
         q_open = quote.get("open", "-")
@@ -330,22 +495,28 @@ def draw_fenshi(symbol, refresh_interval=0):
         vol_str = fmt_volume(q_vol) if isinstance(q_vol, (int, float)) and q_vol else "-"
         amt_str = fmt_amount(q_amt) if isinstance(q_amt, (int, float)) and q_amt else "-"
 
-        print()
-        print(f"  {symbol}  {now_str}")
-        print(f"  ┌──────────────────────────────────────────────────────────┐")
-        print(f"  │ 最新: {cur:>8.2f}   涨跌: {sign}{chg_val:>7.2f}   涨跌幅: {sign}{pct_val:>6.2f}%      │")
-        print(f"  │ 今开: {open_str:>8}   昨收: {last_close:>8.2f}   今高: {high_str:>8}   今低: {low_str:>8} │")
-        print(f"  │ 成交量: {vol_str:>6}    成交额: {amt_str:>10}                     │")
-        print(f"  └──────────────────────────────────────────────────────────┘")
+        info1 = f" {C_DIM}今开{RESET}{C_BG} {C_WHITE}{open_str}{RESET}{C_BG}  {C_DIM}昨收{RESET}{C_BG} {C_WHITE}{last_close:.2f}{RESET}{C_BG}  {C_DIM}最高{RESET}{C_BG} {C_RED}{high_str}{RESET}{C_BG}  {C_DIM}最低{RESET}{C_BG} {C_GREEN}{low_str}{RESET}{C_BG}"
+        info2 = f" {C_DIM}成交量{RESET}{C_BG} {C_WHITE}{vol_str}{RESET}{C_BG}  {C_DIM}成交额{RESET}{C_BG} {C_WHITE}{amt_str}{RESET}{C_BG}  {C_DIM}换手率{RESET}{C_BG} {C_WHITE}{quote.get('turnover_rate', '-')}%{RESET}{C_BG}"
+
+        out.append(info1.ljust(term_w))
+        out.append(info2.ljust(term_w))
+
+        # ── Output ──
+        # Clear screen and move cursor to top
+        sys.stdout.write(f"{ESC}2J{ESC}H")
+        sys.stdout.write("\n".join(out) + RESET + "\n")
 
         if refresh_interval <= 0:
             break
 
-        print(f"  ── 每 {refresh_interval}s 自动刷新, Ctrl+C 停止 ──")
+        sys.stdout.write(f" {C_DIM}── 每 {refresh_interval}s 自动刷新, Ctrl+C 停止 ──{RESET}\n")
+        sys.stdout.flush()
         try:
             time.sleep(refresh_interval)
         except KeyboardInterrupt:
-            print("\n  刷新已停止。")
+            sys.stdout.write(f"\n{ESC}2J{ESC}H")
+            sys.stdout.write(f" {C_DIM}刷新已停止{RESET}\n")
+            sys.stdout.flush()
             break
 
 
