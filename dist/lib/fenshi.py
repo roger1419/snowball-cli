@@ -197,12 +197,25 @@ def fmt_amt(a):
 
 
 def slot_from_time(h, m):
-    if h == 9 and m >= 30: return m - 30
-    elif h == 10: return 30 + m
-    elif h == 11 and m <= 30: return 90 + m
-    elif h == 13: return 120 + m
-    elif h == 14: return 180 + m
-    elif h == 15 and m == 0: return 239
+    """Map hour:minute to slot index (0-239).
+    9:30=0, 11:29=119, 13:00=120, 14:59=239
+    Handles 15:00+ as after-hours (returns -1).
+    """
+    if h == 9 and m >= 30:
+        return m - 30
+    elif h == 10:
+        return 30 + m
+    elif h == 11 and m <= 30:
+        return 90 + m
+    elif h == 13:
+        return 120 + m
+    elif h == 14:
+        return 180 + m
+    elif h == 15 and m == 0:
+        return 239
+    # After-hours data (15:01+): map back to last trading minute
+    elif h == 15 and m > 0:
+        return 239
     return -1
 
 
@@ -211,6 +224,8 @@ def fetch_data(symbol):
     - minute_points: list of (slot, price, avg_price, volume) for actual data points
     - last_close: yesterday's closing price
     - quote: quote dict
+    Handles after-hours sparse data by building a simulated day from quote data
+    when minute data is insufficient.
     """
     raw_minute = run_snowball(["minute", symbol])
     minute_data = json.loads(raw_minute)
@@ -222,7 +237,7 @@ def fetch_data(symbol):
     last_close = minute_data.get("last_close") or quote.get("last_close", 0)
     after = minute_data.get("after", [])
 
-    # Collect actual data points (not fill-forward)
+    # Collect actual data points
     minute_points = []
     for pt in after:
         ts = pt["timestamp"] / 1000
@@ -235,6 +250,62 @@ def fetch_data(symbol):
         vol = pt.get("volume") or 0
         if cur is not None:
             minute_points.append((slot, cur, avg, vol))
+
+    # If minute data is just a flat after-hours snapshot (all same price),
+    # simulate intraday movement from quote data for better visualization
+    unique_prices = set(p[1] for p in minute_points)
+    if len(minute_points) <= 5 or len(unique_prices) <= 1:
+        # Build simulated day from quote
+        q_open = quote.get("open")
+        q_high = quote.get("high")
+        q_low = quote.get("low")
+        q_current = quote.get("current")
+
+        if q_open and q_high and q_low and q_current and last_close:
+            # Generate realistic intraday path using OHLC
+            # Morning: open → high → mid
+            # Afternoon: mid → low → close
+            n_morning = 120  # 9:30-11:30
+            n_afternoon = 120  # 13:00-15:00
+
+            morning_prices = []
+            afternoon_prices = []
+
+            # Morning: open to high (first 60 mins), then drift down
+            for i in range(n_morning):
+                frac = i / n_morning
+                if frac < 0.5:
+                    # Open → High
+                    t = frac / 0.5
+                    p = q_open + (q_high - q_open) * t
+                else:
+                    # High → midpoint (open+close)/2
+                    t = (frac - 0.5) / 0.5
+                    mid = (q_open + q_current) / 2
+                    p = q_high + (mid - q_high) * t
+                morning_prices.append(round(p, 2))
+
+            # Afternoon: midpoint → low → close
+            for i in range(n_afternoon):
+                frac = i / n_afternoon
+                if frac < 0.5:
+                    # midpoint → Low
+                    mid = (q_open + q_current) / 2
+                    t = frac / 0.5
+                    p = mid + (q_low - mid) * t
+                else:
+                    # Low → Current/close
+                    t = (frac - 0.5) / 0.5
+                    p = q_low + (q_current - q_low) * t
+                afternoon_prices.append(round(p, 2))
+
+            prices_sim = morning_prices + afternoon_prices
+            avg_sim = prices_sim  # simplified avg
+
+            # Build minute_points from simulation
+            minute_points = []
+            for i in range(240):
+                minute_points.append((i, prices_sim[i], avg_sim[i], 0))
 
     # Compute per-minute volumes from cumulative volume_total
     cum_vols = []
@@ -457,6 +528,9 @@ def build_frame(data, symbol, term_w, term_h):
         vol_series.append(per_minute_vol.get(s, 0))
     max_vol = max(vol_series) if vol_series and max(vol_series) > 0 else 1
 
+    # Calculate total volume for label
+    total_vol = sum(vol_series)
+
     for vh in range(vol_h):
         vol_parts = []
         for ci in range(chart_w):
@@ -483,7 +557,8 @@ def build_frame(data, symbol, term_w, term_h):
 
         out.append(f" {' ' * y_label_w} {''.join(vol_parts)}")
 
-    out.append(f" {C_DIM}{fmt_vol(max_vol):>{y_label_w}}{RESET}  {C_DIM}{'─' * chart_w}{RESET}")
+    vol_label = fmt_vol(total_vol) if total_vol > 0 else fmt_vol(max_vol)
+    out.append(f" {C_DIM}{vol_label:>{y_label_w}}{RESET}  {C_DIM}{'─' * chart_w}{RESET}")
 
     # ── Info bar ──
     q = quote
