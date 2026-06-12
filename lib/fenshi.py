@@ -390,7 +390,7 @@ def build_frame(data, symbol, term_w, term_h):
     price_rows = render_braille(prices, trace_w, price_h, ymin, ymax)
     avg_rows = render_braille_overlay(avgs, trace_w, price_h, ymin, ymax)
 
-    # Reference line (previous close)
+    # Reference line row (always draw, even without Y-axis label)
     if ymax > ymin:
         ref_ratio = (last_close - ymin) / (ymax - ymin)
         ref_row = int((1.0 - ref_ratio) * (price_h - 1))
@@ -404,7 +404,13 @@ def build_frame(data, symbol, term_w, term_h):
         row = int(frac * (price_h - 1))
         val = ymax - frac * (ymax - ymin)
         lbl = f"{val:>7.2f} "
-        y_label_map[row] = (lbl, abs(val - last_close) < 0.001)
+        is_close = abs(val - last_close) < (ymax - ymin) * 0.01
+        y_label_map[row] = (lbl, is_close)
+
+    # Always mark reference line row
+    is_ref_row = ref_row not in y_label_map
+    if is_ref_row:
+        y_label_map[ref_row] = (f"{last_close:>7.2f} ", True)
 
     for row in range(price_h):
         # Y label
