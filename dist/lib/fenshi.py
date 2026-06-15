@@ -189,28 +189,29 @@ def build_frame(data, symbol):
                 if pch != " ":
                     c = C_RED if (src >= 0 and src < np_ and prices[src] >= lc) else (C_GREEN if src >= 0 else pc)
                     parts.append(f"{c}{pch}{RESET}")
-                elif ach != " ":
+                elif not is_ref and ach != " ":
                     parts.append(f"{C_YELLOW}{ach}{RESET}")
-                elif is_ref and ci % 4 < 2:
+                elif is_ref and ci % 5 < 3:
                     parts.append(f"{C_YELLOW}{DIM}┄{RESET}")
                 else:
                     parts.append(" ")
             else:
-                parts.append(f"{C_YELLOW}{DIM}┄{RESET}" if (is_ref and ci % 4 < 2) else " ")
+                parts.append(f"{C_YELLOW}{DIM}┄{RESET}" if (is_ref and ci % 5 < 3) else " ")
         out.append(f" {lc2}{lbl}{RESET}{''.join(parts)}")
 
     # X-axis time labels: show all 6 key time marks positioned across full chart_w.
     # Even during trading hours, future time labels serve as reference points.
     xl = [" "] * cw
-    all_marks = [(0, "9:30"), (60, "10:30"), (119, "11:30"), (120, "13:00"), (180, "14:00"), (239, "15:00")]
+    # Use "11:30/13:00" combined label — slots 119/120 are adjacent (lunch gap)
+    all_marks = [(0, "9:30"), (60, "10:30"), (119, "11:30/13:00"), (180, "14:00"), (239, "15:00")]
 
-    # Map slot 0-239 proportionally across full chart_w
     for sv, lb in all_marks:
         xp = int(sv * (cw - 1) / 239)
         xp = max(0, min(cw - len(lb), xp))
         for li, ch in enumerate(lb):
-            if xp + li < cw:
-                xl[xp + li] = ch
+            pos = xp + li
+            if pos < cw:
+                xl[pos] = ch
     out.append(f" {' ' * ylw}{C_DIM}{''.join(xl)}{RESET}")
 
     # ── Volume ──
