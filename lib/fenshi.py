@@ -196,37 +196,18 @@ def build_frame(data, symbol):
                 parts.append(f"{C_YELLOW}{DIM}┄{RESET}" if (is_ref and ci % 4 < 2) else " ")
         out.append(f" {lc2}{lbl}{RESET}{''.join(parts)}")
 
-    # X-axis time labels: positioned within trace_w, only show past times
+    # X-axis time labels: show all 6 key time marks positioned across full chart_w.
+    # Even during trading hours, future time labels serve as reference points.
     xl = [" "] * cw
     all_marks = [(0, "9:30"), (60, "10:30"), (119, "11:30"), (120, "13:00"), (180, "14:00"), (239, "15:00")]
-    # For trading hours, only show labels up to current slot
-    if is_trading:
-        h, m = now_dt.hour, now_dt.minute
-        cur_slot = slot_from_time(h, m)
-        marks = [(s, l) for s, l in all_marks if s <= cur_slot]
-    else:
-        marks = all_marks
 
-    # Position labels within trace_w (not full chart_w) for correct time alignment
-    label_w = trace_w if is_trading else cw
-    fs, ls_ = slots[0], slots[-1]
-
-    # Place labels with collision avoidance
-    last_x = -10  # minimum spacing between labels
-    for sv, lb in marks:
-        if ls_ != fs:
-            xp = int((sv - fs) * (label_w - 1) / (ls_ - fs))
-        else:
-            xp = 0
-        xp = max(0, min(label_w - len(lb), xp))
-        # Skip if too close to previous label
-        if xp < last_x + 6:
-            continue
+    # Map slot 0-239 proportionally across full chart_w
+    for sv, lb in all_marks:
+        xp = int(sv * (cw - 1) / 239)
+        xp = max(0, min(cw - len(lb), xp))
         for li, ch in enumerate(lb):
-            pos = xp + li
-            if pos < cw:
-                xl[pos] = ch
-        last_x = xp + len(lb)
+            if xp + li < cw:
+                xl[xp + li] = ch
     out.append(f" {' ' * ylw}{C_DIM}{''.join(xl)}{RESET}")
 
     # ── Volume ──
