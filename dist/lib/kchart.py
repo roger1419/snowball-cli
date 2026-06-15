@@ -116,7 +116,7 @@ def draw_kline(data, ma_periods):
 
     # ── Panel 2: Volume ──
     plt.subplot(2, 1)
-    vol_colors = ["green+" if closes[i] >= opens[i] else "red+" for i in range(n)]
+    vol_colors = ["red+" if closes[i] >= opens[i] else "green+" for i in range(n)]
     plt.bar(dates, volumes, color=vol_colors, label="Volume", width=0.6)
     plt.ylabel("Volume")
 
