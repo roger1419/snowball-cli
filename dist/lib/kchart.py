@@ -1,45 +1,22 @@
 #!/usr/bin/env python3
 """
-snowball kchart — Terminal K-line chart with indicators
-Usage: snowball kchart <symbol> [--period day] [--count 60] [--ma 5,10,20]
+snowball kchart — Terminal K-line chart with candlesticks and indicators.
+Usage: snowball kchart <symbol> [--period day] [--count 60] [--ma 5,10,20,60]
 """
-
 import sys
-import json
-import subprocess
 from datetime import datetime
+from chart_utils import (
+    fetch_json, run_snowball, fmt_vol, fmt_amt, fmt_pct,
+    C_RED, C_GREEN, C_YELLOW, C_WHITE, C_DIM, C_CYAN, C_MAGENTA, C_ORANGE, C_BLUE,
+    RESET, BOLD, DIM, CLEAR,
+)
 
-def run_snowball(args):
-    import shutil, os
-    snowball_path = shutil.which("snowball")
-    if not snowball_path:
-        for p in [os.path.expanduser("~/AppData/Roaming/npm/snowball.cmd"),
-                  os.path.expanduser("~/AppData/Roaming/npm/snowball"),
-                  "/usr/local/bin/snowball"]:
-            if os.path.exists(p):
-                snowball_path = p
-                break
-    if not snowball_path:
-        print("Error: snowball CLI not found", file=sys.stderr)
-        sys.exit(1)
-
-    if sys.platform == "win32":
-        cmd = ["cmd", "/c", "snowball"] + args
-    else:
-        cmd = [snowball_path] + args
-
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-    if result.returncode != 0 and not result.stdout.strip():
-        print(f"Error: {result.stderr.strip()}", file=sys.stderr)
-        sys.exit(1)
-    return result.stdout.strip()
 
 def parse_args():
     symbol = None
     period = "day"
     count = 60
-    ma = "5,10,20"
-
+    ma = "5,10,20,60"
     i = 1
     while i < len(sys.argv):
         a = sys.argv[i]
@@ -53,13 +30,11 @@ def parse_args():
             symbol = a; i += 1
         else:
             i += 1
-
     if not symbol:
-        print("Usage: snowball kchart <symbol> [--period day] [--count 60] [--ma 5,10,20]")
+        print("Usage: snowball kchart <symbol> [--period day|week|month] [--count 60] [--ma 5,10,20,60]")
         sys.exit(1)
+    return symbol, period, count, [int(x) for x in ma.split(",")]
 
-    ma_periods = [int(x) for x in ma.split(",")]
-    return symbol, period, count, ma_periods
 
 def calc_ma(closes, period):
     result = []
@@ -67,135 +42,164 @@ def calc_ma(closes, period):
         if i < period - 1:
             result.append(None)
         else:
-            result.append(sum(closes[i - period + 1:i + 1]) / period)
+            window = closes[i - period + 1:i + 1]
+            result.append(sum(window) / period)
     return result
 
-def fmt_volume(v):
-    if v >= 1e8:
-        return f"{v/1e8:.1f}亿"
-    if v >= 1e4:
-        return f"{v/1e4:.0f}万"
-    return str(int(v))
-
-def fmt_amount(a):
-    if a >= 1e8:
-        return f"{a/1e8:.1f}亿"
-    if a >= 1e4:
-        return f"{a/1e4:.0f}万"
-    return f"{a:.0f}"
 
 def draw_kline(data, ma_periods):
     import plotext as plt
 
     columns = data.get("column", [])
     items = data.get("item", [])
-
     if not items:
         print("No K-line data available.")
         return
 
-    col_idx = {name: i for i, name in enumerate(columns)}
+    ci = {name: i for i, name in enumerate(columns)}
 
-    timestamps = [row[col_idx["timestamp"]] for row in items]
-    opens = [row[col_idx["open"]] for row in items]
-    highs = [row[col_idx["high"]] for row in items]
-    lows = [row[col_idx["low"]] for row in items]
-    closes = [row[col_idx["close"]] for row in items]
-    volumes = [row[col_idx["volume"]] for row in items]
-    pcts = [row[col_idx["percent"]] for row in items]
-    turnover_rates = [row[col_idx["turnoverrate"]] for row in items]
-    amounts = [row[col_idx["amount"]] for row in items]
-    pe_list = [row[col_idx["pe"]] for row in items]
-    pb_list = [row[col_idx["pb"]] for row in items]
+    # Extract arrays
+    timestamps = [row[ci["timestamp"]] for row in items]
+    opens   = [row[ci["open"]]   for row in items]
+    highs   = [row[ci["high"]]   for row in items]
+    lows    = [row[ci["low"]]    for row in items]
+    closes  = [row[ci["close"]]  for row in items]
+    volumes = [row[ci["volume"]] for row in items]
+    pcts    = [row[ci["percent"]] for row in items]
+    pe_list = [row[ci["pe"]] for row in items]
+    pb_list = [row[ci["pb"]] for row in items]
+    turnover = [row[ci["turnoverrate"]] for row in items]
+    amounts  = [row[ci["amount"]] for row in items]
 
     dates = [datetime.fromtimestamp(t / 1000).strftime("%d/%m/%Y") for t in timestamps]
     n = len(items)
+    sym = data.get("symbol", "")
 
-    plt.plotsize(130, 40)
+    # ── Configure plotext ──
+    plt.plotsize(125, 38)
     plt.theme("dark")
-
-    # ── Subplot 1: Candlestick + MA ──
     plt.subplots(3, 1)
-    plt.subplot(1, 1)
 
-    # Native candlestick chart
+    # ── Panel 1: Candlestick + MA ──
+    plt.subplot(1, 1)
     plt.candlestick(
         dates,
         {"Open": opens, "Close": closes, "High": highs, "Low": lows},
         colors=["red+", "green+"]
     )
 
-    # Moving averages (use numeric x for MA lines, skip date alignment issues)
-    ma_colors = ["cyan", "yellow", "magenta", "white", "blue"]
-    for mi, period in enumerate(ma_periods):
+    # MA lines with stock-app color scheme
+    ma_colors = {
+        5:  "orange",      # MA5 = orange (similar to stock apps)
+        10: "cyan",        # MA10 = cyan
+        20: "yellow",      # MA20 = yellow
+        30: "violet",      # MA30
+        60: "lightgray",   # MA60 = gray
+        90: "blue",        # MA90
+        120: "magenta",    # MA120
+        250: "lightgreen", # MA250 (年线)
+    }
+
+    for period in ma_periods:
         if period > n:
             continue
         ma_vals = calc_ma(closes, period)
         valid_x = [dates[i] for i in range(n) if ma_vals[i] is not None]
         valid_y = [ma_vals[i] for i in range(n) if ma_vals[i] is not None]
-        clr = ma_colors[mi % len(ma_colors)]
+        clr = ma_colors.get(period, "white")
         plt.plot(valid_x, valid_y, label=f"MA{period}", color=clr)
 
-    plt.title(f"{data.get('symbol', '')}  K-Line  |  {dates[0]} ~ {dates[-1]}  |  {n} bars")
+    first_date = datetime.fromtimestamp(timestamps[0] / 1000).strftime("%Y-%m-%d")
+    last_date  = datetime.fromtimestamp(timestamps[-1] / 1000).strftime("%Y-%m-%d")
+    plt.title(f"{sym}  K-Line  {first_date} → {last_date}  [{n} bars]")
     plt.ylabel("Price")
 
-    # ── Subplot 2: Volume ──
+    # ── Panel 2: Volume ──
     plt.subplot(2, 1)
     vol_colors = ["green+" if closes[i] >= opens[i] else "red+" for i in range(n)]
     plt.bar(dates, volumes, color=vol_colors, label="Volume", width=0.6)
-    plt.ylabel("Vol")
+    plt.ylabel("Volume")
 
-    # ── Subplot 3: PE/PB ──
+    # ── Panel 3: PE / PB ──
     plt.subplot(3, 1)
-    valid_pe_x = [dates[i] for i in range(n) if pe_list[i] is not None]
-    valid_pe_y = [pe_list[i] for i in range(n) if pe_list[i] is not None]
-    valid_pb_x = [dates[i] for i in range(n) if pb_list[i] is not None]
-    valid_pb_y = [pb_list[i] for i in range(n) if pb_list[i] is not None]
+    pe_x = [dates[i] for i in range(n) if pe_list[i] is not None]
+    pe_y = [pe_list[i] for i in range(n) if pe_list[i] is not None]
+    pb_x = [dates[i] for i in range(n) if pb_list[i] is not None]
+    pb_y = [pb_list[i] for i in range(n) if pb_list[i] is not None]
 
-    if valid_pe_y:
-        plt.plot(valid_pe_x, valid_pe_y, label="PE", color="cyan")
-    if valid_pb_y:
-        plt.plot(valid_pb_x, valid_pb_y, label="PB", color="yellow")
-
-    plt.ylabel("PE/PB")
+    if pe_y:
+        plt.plot(pe_x, pe_y, label="PE", color="cyan")
+    if pb_y:
+        plt.plot(pb_x, pb_y, label="PB", color="yellow")
+    plt.ylabel("PE / PB")
     plt.xlabel("Date")
-
     plt.show()
 
-    # ── Summary info ──
-    print()
-    sym = data.get("symbol", "")
-    print(f"  {sym}  {dates[-1]}")
-    print(f"  ┌──────────────────────────────────────────────────────────┐")
-    print(f"  │ 收盘: {closes[-1]:>10.2f}   涨跌幅: {pcts[-1]:>+7.2f}%                 │")
-    print(f"  │ 开盘: {opens[-1]:>10.2f}   最高:   {highs[-1]:>10.2f}  最低: {lows[-1]:>10.2f} │")
-    print(f"  │ 成交量: {fmt_volume(volumes[-1]):>8}   成交额: {fmt_amount(amounts[-1]):>10}        │")
-    pe_str = f"{pe_list[-1]:>10.1f}" if pe_list[-1] is not None else "       N/A"
-    pb_str = f"{pb_list[-1]:>8.2f}" if pb_list[-1] is not None else "     N/A"
-    print(f"  │ 换手率: {turnover_rates[-1]:>7.2f}%   PE:{pe_str}  PB:{pb_str} │")
-    print(f"  └──────────────────────────────────────────────────────────┘")
+    # ── Summary panel ──
+    cur  = closes[-1]
+    o    = opens[-1]
+    hi   = highs[-1]
+    lo   = lows[-1]
+    pct  = pcts[-1]
+    vol  = volumes[-1]
+    amt  = amounts[-1]
+    tr   = turnover[-1]
+    pe   = pe_list[-1]
+    pb   = pb_list[-1]
+    pc   = C_RED if pct >= 0 else C_GREEN
+    sign = "+" if pct >= 0 else ""
+    green_or_red = "red" if pct >= 0 else "green"
 
-    ma_strs = []
+    # Compute trend stats
+    if n >= 5:
+        ma5_now  = sum(closes[-5:]) / 5
+        ma10_now = sum(closes[-10:]) / 10 if n >= 10 else None
+        ma20_now = sum(closes[-20:]) / 20 if n >= 20 else None
+        ma60_now = sum(closes[-60:]) / 60 if n >= 60 else None
+    else:
+        ma5_now = ma10_now = ma20_now = ma60_now = None
+
+    # Change-rate brightness
+    chg_sign = "▲" if pct >= 0 else "▼"
+
+    print(f"\n  {C_WHITE}{BOLD}{sym}{RESET}  {last_date}")
+    print(f"  ┌───────────────────────────────────────────────────────────────┐")
+    print(f"  │ {C_WHITE}收盘{RESET} {C_WHITE}{cur:>10.2f}{RESET}    {C_WHITE}涨跌幅{RESET} {pc}{chg_sign} {sign}{pct:>7.2f}%{RESET}                          │")
+    print(f"  │ {C_DIM}开盘{RESET} {o:>10.2f}    {C_DIM}最高{RESET}   {C_RED}{hi:>10.2f}{RESET}  {C_DIM}最低{RESET} {C_GREEN}{lo:>10.2f}{RESET}     │")
+    print(f"  │ {C_DIM}成交量{RESET} {fmt_vol(vol):>8}    {C_DIM}成交额{RESET} {fmt_amt(amt):>10}                          │")
+
+    pe_str = f"{pe:>8.1f}" if pe is not None else "      N/A"
+    pb_str = f"{pb:>6.2f}" if pb is not None else "   N/A"
+    tr_str = f"{tr:>6.2f}%" if tr is not None else "   N/A"
+
+    print(f"  │ {C_DIM}换手率{RESET} {tr_str}     {C_DIM}PE{RESET} {pe_str}   {C_DIM}PB{RESET} {pb_str}            │")
+    print(f"  └───────────────────────────────────────────────────────────────┘")
+
+    # MA values
+    ma_lines = []
+    ma_names = {5: C_ORANGE, 10: C_BLUE, 20: C_MAGENTA, 60: C_DIM}
     for period in ma_periods:
-        ma_vals = calc_ma(closes, period)
-        val = ma_vals[-1]
-        if val is not None:
-            ma_strs.append(f"MA{period}={val:.2f}")
-    if ma_strs:
-        print(f"  均线: {' | '.join(ma_strs)}")
+        v = calc_ma(closes, period)[-1]
+        if v is not None:
+            c = ma_names.get(period, C_WHITE)
+            ma_lines.append(f"{c}MA{period}{RESET}={v:.2f}")
+    if ma_lines:
+        print(f"  均线: {'  '.join(ma_lines)}")
+
+    # Price position vs MA
+    if ma5_now and ma10_now and ma20_now:
+        above_below = []
+        for period, val in [(5, ma5_now), (10, ma10_now), (20, ma20_now)]:
+            relation = f"{C_RED}↑{RESET}" if cur > val else f"{C_GREEN}↓{RESET}"
+            above_below.append(f"MA{period}{relation}")
+        print(f"  价格位置: {'  '.join(above_below)}  (vs 均线)")
+
 
 def main():
     symbol, period, count, ma_periods = parse_args()
-
-    raw = run_snowball(["kline", symbol, "--period", period, "--count", str(count)])
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        print("Failed to parse K-line data:", file=sys.stderr)
-        print(raw[:200], file=sys.stderr)
-        sys.exit(1)
-
+    data = fetch_json(["kline", symbol, "--period", period, "--count", str(count)])
     draw_kline(data, ma_periods)
+
 
 if __name__ == "__main__":
     main()
