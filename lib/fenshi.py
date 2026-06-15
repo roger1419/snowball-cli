@@ -15,7 +15,7 @@ from chart_utils import (
     slot_from_time, compute_trace_width,
     C_RED, C_GREEN, C_YELLOW, C_WHITE, C_DIM, C_BG,
     RESET, BOLD, DIM, CLEAR, HIDE_CUR, SHOW_CUR,
-    move_to, clear_line,
+    move_to, clear_line, fg,
 )
 
 
@@ -100,6 +100,8 @@ def _simulate_path(o, hi, lo, cur):
             pts.append(round(lo + (cur - lo) * (frac - 0.5) / 0.5, 2))
     return pts
 
+
+C_REF = fg(80, 80, 100) + DIM  # faint reference line
 
 def build_frame(data, symbol):
     """Build complete rendering frame as ANSI strings."""
@@ -189,14 +191,14 @@ def build_frame(data, symbol):
                 if pch != " ":
                     c = C_RED if (src >= 0 and src < np_ and prices[src] >= lc) else (C_GREEN if src >= 0 else pc)
                     parts.append(f"{c}{pch}{RESET}")
-                elif not is_ref and ach != " ":
+                elif ach != " ":
                     parts.append(f"{C_YELLOW}{ach}{RESET}")
-                elif is_ref and ci % 5 < 3:
-                    parts.append(f"{C_YELLOW}{DIM}┄{RESET}")
+                elif is_ref and ci % 10 == 0:
+                    parts.append(f"{C_REF}┈{RESET}")  # faint, sparse
                 else:
                     parts.append(" ")
             else:
-                parts.append(f"{C_YELLOW}{DIM}┄{RESET}" if (is_ref and ci % 5 < 3) else " ")
+                parts.append(f"{C_REF}┈{RESET}" if (is_ref and ci % 10 == 0) else " ")
         out.append(f" {lc2}{lbl}{RESET}{''.join(parts)}")
 
     # X-axis time labels: show all 6 key time marks positioned across full chart_w.
