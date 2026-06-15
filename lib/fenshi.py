@@ -26,11 +26,14 @@ def fetch_intraday(symbol):
     quote_data  = fetch_json(["quote", symbol])
     quote = quote_data[0] if quote_data else {}
     last_close = minute_data.get("last_close") or quote.get("last_close", 0)
-    after = minute_data.get("after", [])
+
+    # API returns two fields: "items" (intraday minutes during trading)
+    # and "after" (sparse after-hours snapshots). Use items as primary source.
+    source = minute_data.get("items") or minute_data.get("after") or []
 
     # Collect per-slot data points
     minute_pts = []
-    for pt in after:
+    for pt in source:
         ts = pt["timestamp"] / 1000
         dt = datetime.fromtimestamp(ts)
         slot = slot_from_time(dt.hour, dt.minute)
@@ -39,7 +42,7 @@ def fetch_intraday(symbol):
         if cur is not None:
             minute_pts.append((slot, cur, pt.get("avg_price"), pt.get("volume") or 0))
 
-    # If data is sparse/flat (after-hours), simulate from OHLC
+    # If data is sparse/flat, simulate from OHLC
     unique = set(p[1] for p in minute_pts)
     if len(minute_pts) <= 5 or len(unique) <= 1:
         o, hi, lo, cur = quote.get("open"), quote.get("high"), quote.get("low"), quote.get("current")
@@ -49,7 +52,7 @@ def fetch_intraday(symbol):
 
     # Build per-minute volumes from cumulative totals
     cum = []
-    for pt in after:
+    for pt in source:
         vt = pt.get("volume_total")
         if vt is not None and vt > 0:
             ts = pt["timestamp"] / 1000
