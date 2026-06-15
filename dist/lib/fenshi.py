@@ -137,10 +137,15 @@ def build_frame(data, symbol):
     if ymax <= ymin:
         ymax = lc * 1.02; ymin = lc * 0.98
 
-    # Trace width
-    trace_w = compute_trace_width(cw)
-    if len(slots) >= 200:
-        trace_w = cw
+    # Trace width: use time-based proportion during trading, full-width after hours
+    now_dt = datetime.now()
+    is_trading = (
+        now_dt.weekday() < 5 and (
+            (9 <= now_dt.hour < 12 and (now_dt.hour > 9 or now_dt.minute >= 30)) or
+            (13 <= now_dt.hour < 15)
+        )
+    )
+    trace_w = compute_trace_width(cw, now_dt) if is_trading else cw
 
     # ── Header ──
     now = datetime.now().strftime("%H:%M:%S")
@@ -191,14 +196,37 @@ def build_frame(data, symbol):
                 parts.append(f"{C_YELLOW}{DIM}┄{RESET}" if (is_ref and ci % 4 < 2) else " ")
         out.append(f" {lc2}{lbl}{RESET}{''.join(parts)}")
 
-    # X-axis
+    # X-axis time labels: positioned within trace_w, only show past times
     xl = [" "] * cw
-    marks = [(0, "9:30"), (60, "10:30"), (119, "11:30"), (120, "13:00"), (180, "14:00"), (239, "15:00")]
-    fs = slots[0]; ls_ = slots[-1]
+    all_marks = [(0, "9:30"), (60, "10:30"), (119, "11:30"), (120, "13:00"), (180, "14:00"), (239, "15:00")]
+    # For trading hours, only show labels up to current slot
+    if is_trading:
+        h, m = now_dt.hour, now_dt.minute
+        cur_slot = slot_from_time(h, m)
+        marks = [(s, l) for s, l in all_marks if s <= cur_slot]
+    else:
+        marks = all_marks
+
+    # Position labels within trace_w (not full chart_w) for correct time alignment
+    label_w = trace_w if is_trading else cw
+    fs, ls_ = slots[0], slots[-1]
+
+    # Place labels with collision avoidance
+    last_x = -10  # minimum spacing between labels
     for sv, lb in marks:
-        xp = int((sv - fs) * (cw - 1) / (ls_ - fs)) if ls_ != fs else 0
-        xp = max(0, min(cw - len(lb), xp))
-        for li, lc_ in enumerate(lb): xl[xp + li] = lc_ if xp + li < cw else " "
+        if ls_ != fs:
+            xp = int((sv - fs) * (label_w - 1) / (ls_ - fs))
+        else:
+            xp = 0
+        xp = max(0, min(label_w - len(lb), xp))
+        # Skip if too close to previous label
+        if xp < last_x + 6:
+            continue
+        for li, ch in enumerate(lb):
+            pos = xp + li
+            if pos < cw:
+                xl[pos] = ch
+        last_x = xp + len(lb)
     out.append(f" {' ' * ylw}{C_DIM}{''.join(xl)}{RESET}")
 
     # ── Volume ──
@@ -209,8 +237,9 @@ def build_frame(data, symbol):
 
     for vh_ in range(vh):
         vp = []
-        for ci in range(cw):
-            ai = int(ci * (np_ - 1) / max(cw - 1, 1)); ai = max(0, min(np_ - 1, ai))
+        label_w = trace_w if is_trading else cw
+        for ci in range(label_w):
+            ai = int(ci * (np_ - 1) / max(label_w - 1, 1)); ai = max(0, min(np_ - 1, ai))
             v = vs[ai] if ai < len(vs) else 0
             if v <= 0: vp.append(" "); continue
             r = v / mv; fh = r * vh
@@ -222,6 +251,8 @@ def build_frame(data, symbol):
                 vp.append(f"{c}▄{RESET}")
             else:
                 vp.append(" ")
+        # Pad remaining chart width
+        vp += [" "] * (cw - label_w)
         out.append(f" {' ' * ylw}{''.join(vp)}")
 
     vl = fmt_vol(tv) if tv > 0 else fmt_vol(mv)
