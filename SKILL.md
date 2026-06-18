@@ -109,11 +109,14 @@ snowball trending day --count 10         # 今日热帖
 snowball live --important                # 重要快讯
 snowball feed a-shares                   # 沪深信息流
 snowball hot cn                          # 热门 A 股
-snowball kol SH600519                    # 个股大 V
+snowball kol SH600519                    # 个股大 V（科创板返回空，见下）
+snowball discuss SH688110 --count 20     # 个股讨论贴（全板块通用，含科创板）
 snowball user <用户ID> --count 10        # 用户帖子
 snowball profile <用户ID>               # 用户主页
 snowball post <帖子ID>                  # 帖子详情
 ```
+
+> **舆情命令选型**：`kol` 底层接口 `/recommend/user/stock_hot_user.json` 对科创板（SH688xxx）及部分次新股服务端直接返回空数组，这是雪球数据源限制，非工具 bug。科创板和这类标的请改用 `discuss`（个股「讨论」Tab），它在 `api.xueqiu.com` 子域上工作、绕过了主站的阿里云 WAF 拦截，全板块都能取到真实讨论贴。`search <关键词>` 关键词搜索贴子则已上游废弃（任何关键词都返回空），不要再依赖。
 
 ### 搜索与基金
 
@@ -148,7 +151,8 @@ snowball forecast SH600519
 ### 大 V 舆情
 
 ```bash
-snowball kol SH600519 --count 10
+snowball kol SH600519 --count 10        # 主板/创业板个股大 V
+snowball discuss SH688110 --count 20    # 科创板等用 discuss（讨论贴）
 snowball user <ID> --count 10
 snowball profile <ID>
 ```

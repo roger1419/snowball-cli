@@ -11,6 +11,7 @@ import { getCookie } from "./auth";
 
 const STOCK_URL = "https://stock.xueqiu.com";
 const XUEQIU_URL = "https://xueqiu.com";
+const API_URL = "https://api.xueqiu.com"; // app-API subdomain — bypasses the Aliyun WAF JS challenge on xueqiu.com for symbol-scoped social endpoints
 const DANJUAN_URL = "https://danjuanapp.com";
 
 const HEADERS = {
@@ -37,7 +38,7 @@ async function request(path: string, params: Record<string, string | number> = {
   }
 
   const data = await res.json();
-  if (data.error_code) {
+  if (data && data.error_code) {
     throw new Error(`API error ${data.error_code}: ${data.error_description}`);
   }
 
@@ -326,12 +327,56 @@ export async function feed(category: string = "headlines", count = 20): Promise<
   });
 }
 
-/** Search posts/articles */
+/**
+ * Posts discussing a specific stock — the "讨论" tab on xueqiu.com/S/<symbol>.
+ *
+ * NOTE: this endpoint only exists on the app-API subdomain (api.xueqiu.com).
+ * On xueqiu.com the same path is guarded by an Aliyun WAF JS challenge and
+ * returns an 85 KB challenge page instead of JSON. The stock_hot_user KOL
+ * endpoint (used by `stockKOLs` below) returns `[]` for all 科创板/SH688xxx
+ * and many newer listings server-side, so this function is the reliable
+ * symbol-scoped sentiment source.
+ */
+export async function stockPosts(
+  symbol: string,
+  count = 20,
+  sort: "time" | "default" = "time",
+  page = 1,
+): Promise<any> {
+  const data = await request("/query/v1/symbol/search/status.json", {
+    symbol,
+    extend: "author",
+    count,
+    comment: 0,
+    source: "user",
+    sort,
+    page,
+    q: "",
+  }, API_URL);
+  const total = data.count ?? data.list?.length ?? 0;
+  const posts = (data.list || []).map(formatPost);
+  return {
+    symbol,
+    total,
+    page,
+    count: posts.length,
+    posts,
+  };
+}
+
+/** Search posts/articles — keyword search across all posts (NOT symbol-scoped).
+ *
+ * NOTE: /statuses/search.json returns an empty body server-side for every
+ * keyword (HTTP 200, 0 bytes) on both xueqiu.com and api.xueqiu.com — this
+ * endpoint appears deprecated/broken upstream. For symbol-scoped discussion
+ * use `stockPosts` instead.
+ */
 export async function searchPosts(query: string, count = 10, sort: "time" | "reply" | "relevance" = "relevance"): Promise<any> {
   const data = await request("/statuses/search.json", {
     q: query, count, page: 1, sort, source: "all",
-  }, XUEQIU_URL);
-  return data.data;
+  }, API_URL);
+  // Endpoint returns an empty body upstream (data === null); surface it as [].
+  return (data && data.data) ? data.data : [];
 }
 
 function formatPost(post: any) {
@@ -376,7 +421,13 @@ export async function liveNews(count = 20): Promise<any> {
   }));
 }
 
-/** KOLs / hot users for a stock */
+/** KOLs / hot users for a stock.
+ *
+ * NOTE: the underlying endpoint /recommend/user/stock_hot_user.json returns
+ * `[]` server-side for 科创板 (SH688xxx) and many newer listings — this is a
+ * data-source limitation, not a parse bug. For those symbols use
+ * `stockPosts` (the 讨论 feed), which works for every symbol category.
+ */
 export async function stockKOLs(symbol: string, count = 10): Promise<any> {
   const data = await request("/recommend/user/stock_hot_user.json", {
     symbol, start: 0, count,

@@ -2851,7 +2851,7 @@ var require_format_normaliser = __commonJS((exports, module) => {
       }
     }
   }
-  module.exports = function(indata, imageData) {
+  module.exports = function(indata, imageData, skipRescale = false) {
     let depth = imageData.depth;
     let width = imageData.width;
     let height = imageData.height;
@@ -2865,7 +2865,7 @@ var require_format_normaliser = __commonJS((exports, module) => {
       if (transColor) {
         replaceTransparentColor(indata, outdata, width, height, transColor);
       }
-      if (depth !== 8) {
+      if (depth !== 8 && !skipRescale) {
         if (depth === 16) {
           outdata = Buffer.alloc(width * height * 4);
         }
@@ -2988,7 +2988,7 @@ var require_parser_async = __commonJS((exports, module) => {
     let normalisedBitmapData;
     try {
       let bitmapData = bitmapper.dataToBitMap(filteredData, this._bitmapInfo);
-      normalisedBitmapData = formatNormaliser(bitmapData, this._bitmapInfo);
+      normalisedBitmapData = formatNormaliser(bitmapData, this._bitmapInfo, this._options.skipRescale);
       bitmapData = null;
     } catch (ex) {
       this._handleError(ex);
@@ -3532,10 +3532,10 @@ var require_sync_reader = __commonJS((exports, module) => {
       }
     }
     if (this._reads.length > 0) {
-      return new Error("There are some read requests waitng on finished stream");
+      throw new Error("There are some read requests waitng on finished stream");
     }
     if (this._buffer.length > 0) {
-      return new Error("unrecognised content at end of stream");
+      throw new Error("unrecognised content at end of stream");
     }
   };
 });
@@ -3639,7 +3639,7 @@ var require_parser_sync = __commonJS((exports, module) => {
     inflateData = null;
     let bitmapData = bitmapper.dataToBitMap(unfilteredData, metaData);
     unfilteredData = null;
-    let normalisedBitmapData = formatNormaliser(bitmapData, metaData);
+    let normalisedBitmapData = formatNormaliser(bitmapData, metaData, options.skipRescale);
     metaData.data = normalisedBitmapData;
     metaData.gamma = gamma || 0;
     return metaData;
@@ -4634,6 +4634,7 @@ async function qrLogin(cdpUrl) {
 init_auth();
 var STOCK_URL = "https://stock.xueqiu.com";
 var XUEQIU_URL2 = "https://xueqiu.com";
+var API_URL = "https://api.xueqiu.com";
 var DANJUAN_URL = "https://danjuanapp.com";
 var HEADERS2 = {
   "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -4655,7 +4656,7 @@ async function request(path, params = {}, base = STOCK_URL) {
     throw new Error(`HTTP ${res.status}: ${await res.text()}`);
   }
   const data = await res.json();
-  if (data.error_code) {
+  if (data && data.error_code) {
     throw new Error(`API error ${data.error_code}: ${data.error_description}`);
   }
   return data;
@@ -4860,6 +4861,27 @@ async function feed(category = "headlines", count = 20) {
       return item;
     }
   });
+}
+async function stockPosts(symbol, count = 20, sort = "time", page = 1) {
+  const data = await request("/query/v1/symbol/search/status.json", {
+    symbol,
+    extend: "author",
+    count,
+    comment: 0,
+    source: "user",
+    sort,
+    page,
+    q: ""
+  }, API_URL);
+  const total = data.count ?? data.list?.length ?? 0;
+  const posts = (data.list || []).map(formatPost);
+  return {
+    symbol,
+    total,
+    page,
+    count: posts.length,
+    posts
+  };
 }
 function formatPost(post) {
   return {
@@ -5338,61 +5360,6 @@ var commands = {
       desc: "Minute-level chart data",
       run: async () => out(await minute(requireArg(1, "Usage: snowball minute SH600519")))
     },
-    kchart: {
-      usage: "kchart <symbol> [--period day|minute] [--count 60] [--ma 5,10,20] [--refresh 30]",
-      desc: "K-line chart (day/week/month) or intraday minute chart with auto-refresh",
-      run: async () => {
-        const sym = requireArg(1, "Usage: snowball kchart SH600519 [--period minute --refresh 30]");
-        const per = flag("period") ?? "day";
-        const refreshVal = flag("refresh") ?? "0";
-        if (per === "minute") {
-          const fenshiPy = join(__dirname2, "lib", "fenshi.py");
-          let fenshiPath;
-          if (existsSync(fenshiPy)) {
-            fenshiPath = fenshiPy;
-          } else {
-            const fenshiPy2 = join(__dirname2, "..", "lib", "fenshi.py");
-            if (existsSync(fenshiPy2)) {
-              fenshiPath = fenshiPy2;
-            } else {
-              console.error("fenshi.py not found. Install plotext: pip install plotext");
-              process.exitCode = 1;
-              return;
-            }
-          }
-          const { execSync } = await import("child_process");
-          try {
-            const refreshArg = parseInt(refreshVal) > 0 ? ` --refresh ${refreshVal}` : "";
-            execSync(`python "${fenshiPath}" ${sym}${refreshArg}`, { stdio: "inherit" });
-          } catch (e) {
-            process.exitCode = 1;
-          }
-        } else {
-          const cnt = count(60);
-          const maStr = flag("ma") ?? "5,10,20";
-          const kchartPy = join(__dirname2, "lib", "kchart.py");
-          let kchartPath;
-          if (existsSync(kchartPy)) {
-            kchartPath = kchartPy;
-          } else {
-            const kchartPy2 = join(__dirname2, "..", "lib", "kchart.py");
-            if (existsSync(kchartPy2)) {
-              kchartPath = kchartPy2;
-            } else {
-              console.error("kchart.py not found. Install plotext: pip install plotext");
-              process.exitCode = 1;
-              return;
-            }
-          }
-          const { execSync } = await import("child_process");
-          try {
-            execSync(`python "${kchartPath}" ${sym} --period ${per} --count ${cnt} --ma ${maStr}`, { stdio: "inherit" });
-          } catch (e) {
-            process.exitCode = 1;
-          }
-        }
-      }
-    },
     market: {
       usage: "market",
       desc: "Major indices overview (no login needed)",
@@ -5509,8 +5476,13 @@ var commands = {
     },
     kol: {
       usage: "kol <symbol> [--count 10]",
-      desc: "KOLs / influencers for a stock",
+      desc: "KOLs / influencers for a stock (empty for 科创板 — use `discuss`)",
       run: async () => out(await stockKOLs(requireArg(1, "Usage: snowball kol SH600519"), count(10)))
+    },
+    discuss: {
+      usage: "discuss <symbol> [--count 20] [--sort time]",
+      desc: "Stock discussion feed (讨论) — works for all symbols incl. 科创板",
+      run: async () => out(await stockPosts(requireArg(1, "Usage: snowball discuss SH688110"), count(20), arg(2) ?? "time"))
     },
     user: {
       usage: "user <user_id> [--count 10]",
@@ -5558,28 +5530,21 @@ var commands = {
 };
 if (MODE === "--version" || MODE === "-v") {
   console.log(VERSION);
-  process.exitCode = 0;
+  process.exit(0);
 }
-let _commandFound = false;
 for (const group of Object.values(commands)) {
   if (MODE && MODE in group) {
-    _commandFound = true;
     try {
       await group[MODE].run();
     } catch (e) {
       console.error(`
   Error: ${e.message}
 `);
-      process.exitCode = 1;
+      process.exit(1);
     }
-    break;
+    process.exit(0);
   }
 }
-if (_commandFound) {
-  process.exitCode = process.exitCode || 0;
-} else if (MODE === "--version" || MODE === "-v") {
-  // already handled
-} else {
 showLogo();
 console.log(`  Snowball CLI v${VERSION} — Xueqiu stock data for AI agents
 `);
@@ -5598,4 +5563,3 @@ console.log(`    SZ000858  Shenzhen (Wuliangye)   01810  HK stock (Xiaomi)
 `);
 console.log(`  All output is JSON — pipe to jq or use in agent scripts.
 `);
-}

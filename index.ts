@@ -456,8 +456,13 @@ const commands: Record<string, Record<string, Command>> = {
     },
     kol: {
       usage: "kol <symbol> [--count 10]",
-      desc: "KOLs / influencers for a stock",
+      desc: "KOLs / influencers for a stock (empty for 科创板 — use `discuss`)",
       run: async () => out(await api.stockKOLs(requireArg(1, "Usage: snowball kol SH600519"), count(10))),
+    },
+    discuss: {
+      usage: "discuss <symbol> [--count 20] [--sort time]",
+      desc: "Stock discussion feed (讨论) — works for all symbols incl. 科创板",
+      run: async () => out(await api.stockPosts(requireArg(1, "Usage: snowball discuss SH688110"), count(20), (arg(2) as any) ?? "time")),
     },
     user: {
       usage: "user <user_id> [--count 10]",
