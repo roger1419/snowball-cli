@@ -3,7 +3,7 @@
  * All output is JSON. Pipe to jq or use in agent scripts.
  */
 
-import { readFileSync } from "fs";
+import { readFileSync, existsSync } from "fs";
 import { homedir } from "os";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
@@ -331,6 +331,61 @@ const commands: Record<string, Record<string, Command>> = {
       usage: "minute <symbol>",
       desc: "Minute-level chart data",
       run: async () => out(await api.minute(requireArg(1, "Usage: snowball minute SH600519"))),
+    },
+    kchart: {
+      usage: "kchart <symbol> [--period day|week|month|minute] [--count 60] [--ma 5,10,20,60] [--refresh 30]",
+      desc: "Terminal K-line chart (day/week/month) or intraday minute chart with auto-refresh",
+      run: async () => {
+        const sym = requireArg(1, "Usage: snowball kchart SH600519 [--period minute --refresh 30]");
+        const per = flag("period") ?? "day";
+        const refreshVal = flag("refresh") ?? "0";
+        if (per === "minute") {
+          // 分时图 (fenshi.py)
+          const fenshiPy = join(__dirname, "lib", "fenshi.py");
+          let fenshiPath = "";
+          if (existsSync(fenshiPy)) {
+            fenshiPath = fenshiPy;
+          } else {
+            const fenshiPy2 = join(__dirname, "..", "lib", "fenshi.py");
+            if (existsSync(fenshiPy2)) fenshiPath = fenshiPy2;
+          }
+          if (!fenshiPath) {
+            console.error("fenshi.py not found.");
+            process.exitCode = 1;
+            return;
+          }
+          const { execSync } = await import("child_process");
+          try {
+            const refreshArg = parseInt(refreshVal) > 0 ? ` --refresh ${refreshVal}` : "";
+            execSync(`python "${fenshiPath}" ${sym}${refreshArg}`, { stdio: "inherit" });
+          } catch (e) {
+            process.exitCode = 1;
+          }
+        } else {
+          // K 线图 (kchart.py)
+          const cnt = count(60);
+          const maStr = flag("ma") ?? "5,10,20,60";
+          const kchartPy = join(__dirname, "lib", "kchart.py");
+          let kchartPath = "";
+          if (existsSync(kchartPy)) {
+            kchartPath = kchartPy;
+          } else {
+            const kchartPy2 = join(__dirname, "..", "lib", "kchart.py");
+            if (existsSync(kchartPy2)) kchartPath = kchartPy2;
+          }
+          if (!kchartPath) {
+            console.error("kchart.py not found.");
+            process.exitCode = 1;
+            return;
+          }
+          const { execSync } = await import("child_process");
+          try {
+            execSync(`python "${kchartPath}" ${sym} --period ${per} --count ${cnt} --ma ${maStr}`, { stdio: "inherit" });
+          } catch (e) {
+            process.exitCode = 1;
+          }
+        }
+      },
     },
     market: {
       usage: "market",

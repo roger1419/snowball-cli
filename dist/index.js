@@ -4444,7 +4444,7 @@ var require_server = __commonJS((exports) => {
 
 // index.ts
 init_auth();
-import { readFileSync as readFileSync2 } from "fs";
+import { readFileSync as readFileSync2, existsSync as existsSync2 } from "fs";
 import { homedir as homedir2 } from "os";
 import { join as join2, dirname } from "path";
 import { fileURLToPath } from "url";
@@ -5090,12 +5090,12 @@ async function ensureChrome(cdpUrl) {
         ]
       };
       const candidates = defaults[platform()] ?? defaults.linux;
-      const { existsSync: existsSync2 } = await import("fs");
+      const { existsSync: existsSync3 } = await import("fs");
       const { execSync } = await import("child_process");
       bin = "";
       for (const c of candidates) {
         if (c.includes("/") || c.includes("\\")) {
-          if (existsSync2(c)) {
+          if (existsSync3(c)) {
             bin = c;
             break;
           }
@@ -5254,9 +5254,9 @@ var commands = {
       usage: "logout",
       desc: "Remove saved token",
       run: async () => {
-        const { existsSync: existsSync2, unlinkSync } = await import("fs");
+        const { existsSync: existsSync3, unlinkSync } = await import("fs");
         const { TOKEN_PATH: TOKEN_PATH2 } = await Promise.resolve().then(() => (init_auth(), exports_auth));
-        if (existsSync2(TOKEN_PATH2)) {
+        if (existsSync3(TOKEN_PATH2)) {
           unlinkSync(TOKEN_PATH2);
           console.log(`
   Token removed.
@@ -5359,6 +5359,61 @@ var commands = {
       usage: "minute <symbol>",
       desc: "Minute-level chart data",
       run: async () => out(await minute(requireArg(1, "Usage: snowball minute SH600519")))
+    },
+    kchart: {
+      usage: "kchart <symbol> [--period day|week|month|minute] [--count 60] [--ma 5,10,20,60] [--refresh 30]",
+      desc: "Terminal K-line chart (day/week/month) or intraday minute chart with auto-refresh",
+      run: async () => {
+        const sym = requireArg(1, "Usage: snowball kchart SH600519 [--period minute --refresh 30]");
+        const per = flag("period") ?? "day";
+        const refreshVal = flag("refresh") ?? "0";
+        if (per === "minute") {
+          const fenshiPy = join2(__dirname2, "lib", "fenshi.py");
+          let fenshiPath = "";
+          if (existsSync2(fenshiPy)) {
+            fenshiPath = fenshiPy;
+          } else {
+            const fenshiPy2 = join2(__dirname2, "..", "lib", "fenshi.py");
+            if (existsSync2(fenshiPy2))
+              fenshiPath = fenshiPy2;
+          }
+          if (!fenshiPath) {
+            console.error("fenshi.py not found.");
+            process.exitCode = 1;
+            return;
+          }
+          const { execSync } = await import("child_process");
+          try {
+            const refreshArg = parseInt(refreshVal) > 0 ? ` --refresh ${refreshVal}` : "";
+            execSync(`python "${fenshiPath}" ${sym}${refreshArg}`, { stdio: "inherit" });
+          } catch (e) {
+            process.exitCode = 1;
+          }
+        } else {
+          const cnt = count(60);
+          const maStr = flag("ma") ?? "5,10,20,60";
+          const kchartPy = join2(__dirname2, "lib", "kchart.py");
+          let kchartPath = "";
+          if (existsSync2(kchartPy)) {
+            kchartPath = kchartPy;
+          } else {
+            const kchartPy2 = join2(__dirname2, "..", "lib", "kchart.py");
+            if (existsSync2(kchartPy2))
+              kchartPath = kchartPy2;
+          }
+          if (!kchartPath) {
+            console.error("kchart.py not found.");
+            process.exitCode = 1;
+            return;
+          }
+          const { execSync } = await import("child_process");
+          try {
+            execSync(`python "${kchartPath}" ${sym} --period ${per} --count ${cnt} --ma ${maStr}`, { stdio: "inherit" });
+          } catch (e) {
+            process.exitCode = 1;
+          }
+        }
+      }
     },
     market: {
       usage: "market",
