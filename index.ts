@@ -204,7 +204,7 @@ const commands: Record<string, Record<string, Command>> = {
           console.log("  Please login in the Chrome window:");
           console.log("    1. Click '登录' → 2. Scan QR → 3. Press ENTER\n");
           process.stdout.write("  Press ENTER > ");
-          for await (const _ of console) break;
+          await new Promise<void>(r => process.stdin.once("data", () => r()));
           const cookie = await extractFromChrome(CDP_URL);
           saveToken({ cookie, extractedAt: new Date().toISOString(), source: "chrome" });
         } else {
@@ -217,7 +217,7 @@ const commands: Record<string, Record<string, Command>> = {
             console.error(`\n  QR failed: ${e.message}\n  Falling back to manual...\n`);
             console.log("  Login in Chrome → press ENTER\n");
             process.stdout.write("  Press ENTER > ");
-            for await (const _ of console) break;
+            await new Promise<void>(r => process.stdin.once("data", () => r()));
             const cookie = await extractFromChrome(CDP_URL);
             saveToken({ cookie, extractedAt: new Date().toISOString(), source: "chrome" });
           }

@@ -78,11 +78,18 @@ export async function verifyToken(cookie: string): Promise<{ valid: boolean; use
 
 /** Extract xueqiu cookies from Chrome via CDP */
 export async function extractFromChrome(cdpUrl: string = "http://127.0.0.1:9222"): Promise<string> {
-  // Fetch all cookies from Chrome via CDP
-  const res = await fetch(`${cdpUrl}/json/version`);
-  const { webSocketDebuggerUrl } = await res.json();
+  // Use page-level CDP target (not browser-level) to get httpOnly cookies like xq_a_token
+  const targetsRes = await fetch(`${cdpUrl}/json`);
+  const targets: any[] = await targetsRes.json();
+  const xueqiuPage = targets.find(
+    (t: any) => t.type === "page" && t.url?.includes("xueqiu.com")
+  );
 
-  const ws = new WebSocket(webSocketDebuggerUrl);
+  if (!xueqiuPage?.webSocketDebuggerUrl) {
+    throw new Error("No xueqiu.com tab found in Chrome");
+  }
+
+  const ws = new WebSocket(xueqiuPage.webSocketDebuggerUrl);
 
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
@@ -91,11 +98,10 @@ export async function extractFromChrome(cdpUrl: string = "http://127.0.0.1:9222"
     }, 10000);
 
     ws.onopen = () => {
-      // Get all cookies for xueqiu.com
       ws.send(JSON.stringify({
         id: 1,
         method: "Network.getCookies",
-        params: { urls: ["https://xueqiu.com"] },
+        params: { urls: ["https://xueqiu.com", "https://stock.xueqiu.com", "https://api.xueqiu.com"] },
       }));
     };
 

@@ -111,9 +111,13 @@ async function verifyToken(cookie) {
   }
 }
 async function extractFromChrome(cdpUrl = "http://127.0.0.1:9222") {
-  const res = await fetch(`${cdpUrl}/json/version`);
-  const { webSocketDebuggerUrl } = await res.json();
-  const ws = new WebSocket(webSocketDebuggerUrl);
+  const targetsRes = await fetch(`${cdpUrl}/json`);
+  const targets = await targetsRes.json();
+  const xueqiuPage = targets.find((t) => t.type === "page" && t.url?.includes("xueqiu.com"));
+  if (!xueqiuPage?.webSocketDebuggerUrl) {
+    throw new Error("No xueqiu.com tab found in Chrome");
+  }
+  const ws = new WebSocket(xueqiuPage.webSocketDebuggerUrl);
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
       ws.close();
@@ -123,7 +127,7 @@ async function extractFromChrome(cdpUrl = "http://127.0.0.1:9222") {
       ws.send(JSON.stringify({
         id: 1,
         method: "Network.getCookies",
-        params: { urls: ["https://xueqiu.com"] }
+        params: { urls: ["https://xueqiu.com", "https://stock.xueqiu.com", "https://api.xueqiu.com"] }
       }));
     };
     ws.onmessage = (event) => {
@@ -5202,8 +5206,7 @@ var commands = {
           console.log(`    1. Click '登录' → 2. Scan QR → 3. Press ENTER
 `);
           process.stdout.write("  Press ENTER > ");
-          for await (const _ of console)
-            break;
+          await new Promise((r) => process.stdin.once("data", () => r()));
           const cookie = await extractFromChrome(CDP_URL);
           saveToken({ cookie, extractedAt: new Date().toISOString(), source: "chrome" });
         } else {
@@ -5220,8 +5223,7 @@ var commands = {
             console.log(`  Login in Chrome → press ENTER
 `);
             process.stdout.write("  Press ENTER > ");
-            for await (const _ of console)
-              break;
+            await new Promise((r) => process.stdin.once("data", () => r()));
             const cookie = await extractFromChrome(CDP_URL);
             saveToken({ cookie, extractedAt: new Date().toISOString(), source: "chrome" });
           }
